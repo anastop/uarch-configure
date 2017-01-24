@@ -262,7 +262,7 @@ static int detect_packages(void) {
 /*******************************/
 /* MSR code                    */
 /*******************************/
-static int rapl_msr(int core, int cpu_model) {
+static int rapl_msr(int core, int cpu_model, int delay) {
 
 	int fd;
 	long long result;
@@ -408,8 +408,8 @@ static int rapl_msr(int core, int cpu_model) {
 		close(fd);
 	}
 
-  	printf("\n\tSleeping 1 second\n\n");
-	sleep(1);
+  	printf("\n\tSleeping %d seconds\n\n", delay);
+	sleep(delay);
 
 	for(j=0;j<total_packages;j++) {
 
@@ -421,19 +421,25 @@ static int rapl_msr(int core, int cpu_model) {
 		package_after[j]=(double)result*cpu_energy_units[j];
 		printf("\t\tPackage energy: %.6fJ\n",
 			package_after[j]-package_before[j]);
+		printf("\t\tPackage avg power: %.6fW\n",
+			(package_after[j]-package_before[j])/(double)delay);
 
 		result=read_msr(fd,MSR_PP0_ENERGY_STATUS);
 		pp0_after[j]=(double)result*cpu_energy_units[j];
 		printf("\t\tPowerPlane0 (cores): %.6fJ\n",
 			pp0_after[j]-pp0_before[j]);
+		printf("\t\tPowerPlane0 (cores) avg power: %.6fW\n",
+			(pp0_after[j]-pp0_before[j])/(double)delay);
 
 		/* not available on SandyBridge-EP */
 		if ((cpu_model==CPU_SANDYBRIDGE) || (cpu_model==CPU_IVYBRIDGE) ||
 			(cpu_model==CPU_HASWELL) || (cpu_model==CPU_BROADWELL)) {
 			result=read_msr(fd,MSR_PP1_ENERGY_STATUS);
 			pp1_after[j]=(double)result*cpu_energy_units[j];
-			printf("\t\tPowerPlane1 (on-core GPU if avail): %.6f J\n",
+			printf("\t\tPowerPlane1 (on-core GPU if avail): %.6fJ\n",
 				pp1_after[j]-pp1_before[j]);
+			printf("\t\tPowerPlane1 (on-core GPU if avail) avg power: %.6fW\n",
+				(pp1_after[j]-pp1_before[j])/(double)delay);
 		}
 
 		if ((cpu_model==CPU_SANDYBRIDGE_EP) || (cpu_model==CPU_IVYBRIDGE_EP) ||
@@ -444,6 +450,8 @@ static int rapl_msr(int core, int cpu_model) {
 			dram_after[j]=(double)result*dram_energy_units[j];
 			printf("\t\tDRAM: %.6fJ\n",
 				dram_after[j]-dram_before[j]);
+			printf("\t\tDRAM avg power: %.6fW\n",
+				(dram_after[j]-dram_before[j])/(double)delay);
 		}
 		close(fd);
 	}
@@ -723,6 +731,7 @@ int main(int argc, char **argv) {
 	int c;
 	int force_msr=0,force_perf_event=0,force_sysfs=0;
 	int core=0;
+	int delay=1;
 	int result=-1;
 	int cpu_model;
 
@@ -731,18 +740,22 @@ int main(int argc, char **argv) {
 
 	opterr=0;
 
-	while ((c = getopt (argc, argv, "c:hmps")) != -1) {
+	while ((c = getopt (argc, argv, "c:d:hmps")) != -1) {
 		switch (c) {
 		case 'c':
 			core = atoi(optarg);
 			break;
+		case 'd':
+			delay = atoi(optarg);
+			break;
 		case 'h':
 			printf("Usage: %s [-c core] [-h] [-m]\n\n",argv[0]);
-			printf("\t-c core : specifies which core to measure\n");
-			printf("\t-h      : displays this help\n");
-			printf("\t-m      : forces use of MSR mode\n");
-			printf("\t-p      : forces use of perf_event mode\n");
-			printf("\t-s      : forces use of sysfs mode\n");
+			printf("\t-c core  : specifies which core to measure\n");
+			printf("\t-d delay : delay (secs) for energy measurement\n");
+			printf("\t-h       : displays this help\n");
+			printf("\t-m       : forces use of MSR mode\n");
+			printf("\t-p       : forces use of perf_event mode\n");
+			printf("\t-s       : forces use of sysfs mode\n");
 			exit(0);
 		case 'm':
 			force_msr = 1;
@@ -775,7 +788,7 @@ int main(int argc, char **argv) {
 	}
 
 	if (result<0) {
-		result=rapl_msr(core,cpu_model);
+		result=rapl_msr(core,cpu_model,delay);
 	}
 
 	if (result<0) {

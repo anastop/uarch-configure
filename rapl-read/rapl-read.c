@@ -419,15 +419,11 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 
 		result=read_msr(fd,MSR_PKG_ENERGY_STATUS);
 		package_after[j]=(double)result*cpu_energy_units[j];
-		printf("\t\tPackage energy: %.6fJ\n",
-			package_after[j]-package_before[j]);
 		printf("\t\tPackage avg power: %.6fW\n",
 			(package_after[j]-package_before[j])/(double)delay);
 
 		result=read_msr(fd,MSR_PP0_ENERGY_STATUS);
 		pp0_after[j]=(double)result*cpu_energy_units[j];
-		printf("\t\tPowerPlane0 (cores): %.6fJ\n",
-			pp0_after[j]-pp0_before[j]);
 		printf("\t\tPowerPlane0 (cores) avg power: %.6fW\n",
 			(pp0_after[j]-pp0_before[j])/(double)delay);
 
@@ -436,8 +432,6 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 			(cpu_model==CPU_HASWELL) || (cpu_model==CPU_BROADWELL)) {
 			result=read_msr(fd,MSR_PP1_ENERGY_STATUS);
 			pp1_after[j]=(double)result*cpu_energy_units[j];
-			printf("\t\tPowerPlane1 (on-core GPU if avail): %.6fJ\n",
-				pp1_after[j]-pp1_before[j]);
 			printf("\t\tPowerPlane1 (on-core GPU if avail) avg power: %.6fW\n",
 				(pp1_after[j]-pp1_before[j])/(double)delay);
 		}
@@ -448,8 +442,6 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 
 			result=read_msr(fd,MSR_DRAM_ENERGY_STATUS);
 			dram_after[j]=(double)result*dram_energy_units[j];
-			printf("\t\tDRAM: %.6fJ\n",
-				dram_after[j]-dram_before[j]);
 			printf("\t\tDRAM avg power: %.6fW\n",
 				(dram_after[j]-dram_before[j])/(double)delay);
 		}

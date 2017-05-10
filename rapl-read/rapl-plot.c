@@ -1,29 +1,6 @@
-/* Read the RAPL registers on recent (>sandybridge) Intel processors	*/
+/* Plot the rapl results */
 /*									*/
-/* There are currently three ways to do this:				*/
-/*	1. Read the MSRs directly with /dev/cpu/??/msr			*/
-/*	2. Use the perf_event_open() interface				*/
-/*	3. Read the values from the sysfs powercap interface		*/
-/*									*/
-/* MSR Code originally based on a (never made it upstream) linux-kernel	*/
-/*	RAPL driver by Zhang Rui <rui.zhang@intel.com>			*/
-/*	https://lkml.org/lkml/2011/5/26/93				*/
-/* Additional contributions by:						*/
-/*	Romain Dolbeau -- romain @ dolbeau.org				*/
-/*									*/
-/* For raw MSR access the /dev/cpu/??/msr driver must be enabled and	*/
-/*	permissions set to allow read access.				*/
-/*	You might need to "modprobe msr" before it will work.		*/
-/*									*/
-/* perf_event_open() support requires at least Linux 3.14 and to have	*/
-/*	/proc/sys/kernel/perf_event_paranoid < 1			*/
-/*									*/
-/* the sysfs powercap interface got into the kernel in 			*/
-/*	2d281d8196e38dd (3.13)						*/
-/*									*/
-/* Compile with:   gcc -O2 -Wall -o rapl-read rapl-read.c -lm		*/
-/*									*/
-/* Vince Weaver -- vincent.weaver @ maine.edu -- 11 September 2015	*/
+/* Vince Weaver -- vincent.weaver @ maine.edu -- 13 April 2017		*/
 /*									*/
 
 #include <stdio.h>
@@ -37,6 +14,7 @@
 #include <math.h>
 #include <string.h>
 
+#include <sys/time.h>
 #include <sys/syscall.h>
 #include <linux/perf_event.h>
 
@@ -82,6 +60,24 @@
 
 #define TIME_UNIT_OFFSET	0x10
 #define TIME_UNIT_MASK		0xF000
+
+
+#define MAX_CPUS	1024
+#define MAX_PACKAGES	16
+
+double package_energy[MAX_PACKAGES],last_package[MAX_PACKAGES];
+double cores_energy[MAX_PACKAGES],last_cores[MAX_PACKAGES];
+double uncore_energy[MAX_PACKAGES],last_uncore[MAX_PACKAGES];
+double dram_energy[MAX_PACKAGES],last_dram[MAX_PACKAGES];
+double psys_energy[MAX_PACKAGES],last_psys[MAX_PACKAGES];
+
+#define PACKAGE 1
+#define CORES	2
+#define UNCORE	4
+#define DRAM	8
+#define PSYS	16
+
+static int available=PACKAGE|CORES|UNCORE|DRAM|PSYS;
 
 static int open_msr(int core) {
 
@@ -191,6 +187,7 @@ static int detect_cpu(void) {
 			break;
 		case CPU_IVYBRIDGE:
 			printf("Ivybridge");
+			available=PACKAGE|CORES|UNCORE;
 			break;
 		case CPU_IVYBRIDGE_EP:
 			printf("Ivybridge-EP");
@@ -200,12 +197,13 @@ static int detect_cpu(void) {
 			break;
 		case CPU_HASWELL_EP:
 			printf("Haswell-EP");
-			break;
-		case CPU_BROADWELL:
-			printf("Broadwell");
+			available=PACKAGE|DRAM;
 			break;
 		case CPU_BROADWELL_EP:
 			printf("Broadwell-EP");
+			break;
+		case CPU_BROADWELL:
+			printf("Broadwell");
 			break;
 		case CPU_SKYLAKE:
 		case CPU_SKYLAKE_HS:
@@ -229,8 +227,6 @@ static int detect_cpu(void) {
 	return model;
 }
 
-#define MAX_CPUS	1024
-#define MAX_PACKAGES	16
 
 static int total_cores=0,total_packages=0;
 static int package_map[MAX_PACKAGES];
@@ -272,24 +268,20 @@ static int detect_packages(void) {
 }
 
 
+static double cpu_energy_units[MAX_PACKAGES],dram_energy_units[MAX_PACKAGES];
+
 /*******************************/
 /* MSR code                    */
 /*******************************/
-static int rapl_msr(int core, int cpu_model, int delay) {
+static int rapl_detect_msr(int core, int cpu_model) {
 
 	int fd;
 	long long result;
 	double power_units,time_units;
-	double cpu_energy_units[MAX_PACKAGES],dram_energy_units[MAX_PACKAGES];
-	double package_before[MAX_PACKAGES],package_after[MAX_PACKAGES];
-	double pp0_before[MAX_PACKAGES],pp0_after[MAX_PACKAGES];
-	double pp1_before[MAX_PACKAGES],pp1_after[MAX_PACKAGES];
-	double dram_before[MAX_PACKAGES],dram_after[MAX_PACKAGES];
-	double psys_before[MAX_PACKAGES],psys_after[MAX_PACKAGES];
+
+
 	double thermal_spec_power,minimum_power,maximum_power,time_window;
 	int j;
-
-	printf("\nTrying /dev/msr interface to gather results\n\n");
 
 	if (cpu_model<0) {
 		printf("\tUnsupported CPU model %d\n",cpu_model);
@@ -297,7 +289,6 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 	}
 
 	for(j=0;j<total_packages;j++) {
-		printf("\tListing paramaters for package #%d\n",j);
 
 		fd=open_msr(package_map[j]);
 
@@ -319,6 +310,9 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 		else {
 			dram_energy_units[j]=cpu_energy_units[j];
 		}
+
+
+
 
 		printf("\t\tPower units = %.3fW\n",power_units);
 		printf("\t\tCPU Energy units = %.8fJ\n",cpu_energy_units[j]);
@@ -388,18 +382,29 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 	}
 	printf("\n");
 
+	return 0;
+}
+
+
+static int rapl_msr(int core, int cpu_model) {
+
+	int fd;
+	long long result;
+
+	int j;
+
 	for(j=0;j<total_packages;j++) {
 
 		fd=open_msr(package_map[j]);
 
 		/* Package Energy */
 		result=read_msr(fd,MSR_PKG_ENERGY_STATUS);
-		package_before[j]=(double)result*cpu_energy_units[j];
+		package_energy[j]=(double)result*cpu_energy_units[j];
 
 		/* PP0 energy */
 		/* Not available on Haswell-EP? */
 		result=read_msr(fd,MSR_PP0_ENERGY_STATUS);
-		pp0_before[j]=(double)result*cpu_energy_units[j];
+		cores_energy[j]=(double)result*cpu_energy_units[j];
 
 		/* PP1 energy */
 		/* not available on *Bridge-EP */
@@ -409,7 +414,7 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 			(cpu_model==CPU_KABYLAKE) || (cpu_model==CPU_KABYLAKE_2)) {
 
 	 		result=read_msr(fd,MSR_PP1_ENERGY_STATUS);
-			pp1_before[j]=(double)result*cpu_energy_units[j];
+			uncore_energy[j]=(double)result*cpu_energy_units[j];
 		}
 
 
@@ -422,81 +427,21 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 			(cpu_model==CPU_KABYLAKE) || (cpu_model==CPU_KABYLAKE_2)) {
 
 			result=read_msr(fd,MSR_DRAM_ENERGY_STATUS);
-			dram_before[j]=(double)result*dram_energy_units[j];
+			dram_energy[j]=(double)result*dram_energy_units[j];
 		}
 
-
-		/* Skylake and newer for Psys				*/
+		/* PSys is Skylake+ */
 		if ((cpu_model==CPU_SKYLAKE) || (cpu_model==CPU_SKYLAKE_HS) ||
 			(cpu_model==CPU_KABYLAKE) || (cpu_model==CPU_KABYLAKE_2)) {
 
 			result=read_msr(fd,MSR_PLATFORM_ENERGY_STATUS);
-			psys_before[j]=(double)result*cpu_energy_units[j];
+			psys_energy[j]=(double)result*cpu_energy_units[j];
 		}
+
 
 		close(fd);
 	}
 
-  	printf("\n\tSleeping %d seconds\n\n", delay);
-	sleep(delay);
-
-	for(j=0;j<total_packages;j++) {
-
-		fd=open_msr(package_map[j]);
-
-		printf("\tPackage %d:\n",j);
-
-		result=read_msr(fd,MSR_PKG_ENERGY_STATUS);
-		package_after[j]=(double)result*cpu_energy_units[j];
-		printf("\t\tPackage avg power: %.6fW\n",
-			(package_after[j]-package_before[j])/(double)delay);
-
-		result=read_msr(fd,MSR_PP0_ENERGY_STATUS);
-		pp0_after[j]=(double)result*cpu_energy_units[j];
-		printf("\t\tPowerPlane0 (cores) avg power: %.6fW\n",
-			(pp0_after[j]-pp0_before[j])/(double)delay);
-
-		/* not available on SandyBridge-EP */
-		if ((cpu_model==CPU_SANDYBRIDGE) || (cpu_model==CPU_IVYBRIDGE) ||
-			(cpu_model==CPU_HASWELL) || (cpu_model==CPU_BROADWELL) ||
-			(cpu_model==CPU_SKYLAKE) || (cpu_model==CPU_SKYLAKE_HS) ||
-			(cpu_model==CPU_KABYLAKE) || (cpu_model==CPU_KABYLAKE_2)) {
-
-
-			result=read_msr(fd,MSR_PP1_ENERGY_STATUS);
-			pp1_after[j]=(double)result*cpu_energy_units[j];
-			printf("\t\tPowerPlane1 (on-core GPU if avail) avg power: %.6fW\n",
-				(pp1_after[j]-pp1_before[j])/(double)delay);
-		}
-
-		if ((cpu_model==CPU_SANDYBRIDGE_EP) || (cpu_model==CPU_IVYBRIDGE_EP) ||
-			(cpu_model==CPU_HASWELL_EP) || (cpu_model==CPU_BROADWELL_EP) ||
-			(cpu_model==CPU_HASWELL) || (cpu_model==CPU_BROADWELL) ||
-			(cpu_model==CPU_SKYLAKE) || (cpu_model==CPU_SKYLAKE_HS) ||
-			(cpu_model==CPU_KABYLAKE) || (cpu_model==CPU_KABYLAKE_2)) {
-
-
-			result=read_msr(fd,MSR_DRAM_ENERGY_STATUS);
-			dram_after[j]=(double)result*dram_energy_units[j];
-			printf("\t\tDRAM avg power: %.6fW\n",
-				(dram_after[j]-dram_before[j])/(double)delay);
-		}
-
-		if ((cpu_model==CPU_SKYLAKE) || (cpu_model==CPU_SKYLAKE_HS) ||
-			(cpu_model==CPU_KABYLAKE) || (cpu_model==CPU_KABYLAKE_2)) {
-
-
-			result=read_msr(fd,MSR_PLATFORM_ENERGY_STATUS);
-			psys_after[j]=(double)result*cpu_energy_units[j];
-			printf("\t\tPSYS: %.6fJ\n",
-				psys_after[j]-psys_before[j]);
-		}
-
-		close(fd);
-	}
-	printf("\n");
-	printf("Note: the energy measurements can overflow in 60s or so\n");
-	printf("      so try to sample the counters more often than that.\n\n");
 
 	return 0;
 }
@@ -540,21 +485,22 @@ static int check_paranoid(void) {
 
 }
 
-static int rapl_perf(int core) {
+static int type;
+static double scale[NUM_RAPL_DOMAINS];
+static char units[NUM_RAPL_DOMAINS][BUFSIZ];
+static int config[NUM_RAPL_DOMAINS];
+static int paranoid_value;
+static int fd[NUM_RAPL_DOMAINS][MAX_PACKAGES];
+static long long value;
+
+static int rapl_perf_detect(int core) {
 
 	FILE *fff;
-	int type;
-	int config[NUM_RAPL_DOMAINS];
-	char units[NUM_RAPL_DOMAINS][BUFSIZ];
-	char filename[BUFSIZ];
-	int fd[NUM_RAPL_DOMAINS][MAX_PACKAGES];
-	double scale[NUM_RAPL_DOMAINS];
-	struct perf_event_attr attr;
-	long long value;
-	int i,j;
-	int paranoid_value;
 
-	printf("\nTrying perf_event interface to gather results\n\n");
+	char filename[BUFSIZ];
+	struct perf_event_attr attr;
+
+	int i,j;
 
 	fff=fopen("/sys/bus/event_source/devices/power/type","r");
 	if (fff==NULL) {
@@ -574,7 +520,8 @@ static int rapl_perf(int core) {
 
 		if (fff!=NULL) {
 			fscanf(fff,"event=%x",&config[i]);
-			printf("\tEvent=%s Config=%d ",rapl_domain_names[i],config[i]);
+			printf("\tType=%d Event=%s Config=%d ",type,
+				rapl_domain_names[i],config[i]);
 			fclose(fff);
 		} else {
 			continue;
@@ -635,29 +582,48 @@ static int rapl_perf(int core) {
 		}
 	}
 
-	printf("\n\tSleeping 1 second\n\n");
-	sleep(1);
+	return 0;
+}
+
+
+static int rapl_perf(int core) {
+
+	int i,j;
+
 
 	for(j=0;j<total_packages;j++) {
-		printf("\tPackage %d:\n",j);
 
 		for(i=0;i<NUM_RAPL_DOMAINS;i++) {
 
 			if (fd[i][j]!=-1) {
+				lseek(fd[i][j],0,SEEK_SET);
 				read(fd[i][j],&value,8);
-				close(fd[i][j]);
+//				close(fd[i][j]);
 
-				printf("\t\t%s Energy Consumed: %lf %s\n",
-					rapl_domain_names[i],
-					(double)value*scale[i],
-					units[i]);
+				if (!strcmp("energy-pkg",rapl_domain_names[i])) {
+					package_energy[j]=(double)value*scale[i];
+				}
+				else if (!strcmp("energy-cores",rapl_domain_names[i])) {
+					cores_energy[j]=(double)value*scale[i];
+				}
+				else if (!strcmp("energy-gpu",rapl_domain_names[i])) {
+					uncore_energy[j]=(double)value*scale[i];
+				}
+				else if (!strcmp("energy-ram",rapl_domain_names[i])) {
+					dram_energy[j]=(double)value*scale[i];
+				}
+				else if (!strcmp("energy-psys",rapl_domain_names[i])) {
+					psys_energy[j]=(double)value*scale[i];
+				}
+				else {
+					printf("Unknown %s\n",rapl_domain_names[i]);
+				}
 
 			}
 
 		}
 
 	}
-	printf("\n");
 
 	return 0;
 }
@@ -669,12 +635,9 @@ static int rapl_sysfs(int core) {
 	char basename[MAX_PACKAGES][256];
 	char tempfile[256];
 	long long before[MAX_PACKAGES][NUM_RAPL_DOMAINS];
-	long long after[MAX_PACKAGES][NUM_RAPL_DOMAINS];
 	int valid[MAX_PACKAGES][NUM_RAPL_DOMAINS];
 	int i,j;
 	FILE *fff;
-
-	printf("\nTrying sysfs powercap interface to gather results\n\n");
 
 	/* /sys/class/powercap/intel-rapl/intel-rapl:0/ */
 	/* name has name */
@@ -731,70 +694,66 @@ static int rapl_sysfs(int core) {
 		}
 	}
 
-	printf("\tSleeping 1 second\n\n");
-	sleep(1);
-
-	/* Gather after values */
 	for(j=0;j<total_packages;j++) {
 		for(i=0;i<NUM_RAPL_DOMAINS;i++) {
 			if (valid[j][i]) {
-				fff=fopen(filenames[j][i],"r");
-				if (fff==NULL) {
-					fprintf(stderr,"\tError opening %s!\n",filenames[j][i]);
+				if (!strncmp("package",event_names[j][i],7)) {
+					package_energy[j]=before[j][i]/1000000.0;
+				}
+				else if (!strcmp("core",event_names[j][i])) {
+					cores_energy[j]=before[j][i]/1000000.0;
+				}
+				else if (!strcmp("uncore",event_names[j][i])) {
+					uncore_energy[j]=before[j][i]/1000000.0;
+				}
+				else if (!strcmp("dram",event_names[j][i])) {
+					dram_energy[j]=before[j][i]/1000000.0;
 				}
 				else {
-					fscanf(fff,"%lld",&after[j][i]);
-					fclose(fff);
+					printf("Unknown %s\n",event_names[j][i]);
 				}
 			}
 		}
 	}
-
-	for(j=0;j<total_packages;j++) {
-		printf("\tPackage %d\n",j);
-		for(i=0;i<NUM_RAPL_DOMAINS;i++) {
-			if (valid[j][i]) {
-				printf("\t\t%s\t: %lfJ\n",event_names[j][i],
-					((double)after[j][i]-(double)before[j][i])/1000000.0);
-			}
-		}
-	}
-	printf("\n");
 
 	return 0;
 
 }
+
+
 
 int main(int argc, char **argv) {
 
 	int c;
 	int force_msr=0,force_perf_event=0,force_sysfs=0;
 	int core=0;
-	int delay=1;
 	int result=-1;
 	int cpu_model;
+	int use_sysfs=0,use_perf_event=0,use_msr=0;
+	int j;
+	int first_time=1;
+
+	struct timeval current_time;
+	double ct,lt,ot;
+
 
 	printf("\n");
 	printf("RAPL read -- use -s for sysfs, -p for perf_event, -m for msr\n\n");
 
 	opterr=0;
 
-	while ((c = getopt (argc, argv, "c:d:hmps")) != -1) {
+	while ((c = getopt (argc, argv, "c:hmps")) != -1) {
 		switch (c) {
 		case 'c':
 			core = atoi(optarg);
 			break;
-		case 'd':
-			delay = atoi(optarg);
-			break;
 		case 'h':
 			printf("Usage: %s [-c core] [-h] [-m]\n\n",argv[0]);
-			printf("\t-c core  : specifies which core to measure\n");
-			printf("\t-d delay : delay (secs) for energy measurement\n");
-			printf("\t-h       : displays this help\n");
-			printf("\t-m       : forces use of MSR mode\n");
-			printf("\t-p       : forces use of perf_event mode\n");
-			printf("\t-s       : forces use of sysfs mode\n");
+			printf("\t-c core : specifies which core to measure\n");
+			printf("\t-h      : displays this help\n");
+			printf("\t-m      : forces use of MSR mode\n");
+			printf("\t-p      : forces use of perf_event mode\n");
+			printf("\t-s      : forces use of sysfs mode\n");
 			exit(0);
 		case 'm':
 			force_msr = 1;
@@ -818,20 +777,32 @@ int main(int argc, char **argv) {
 
 	if ((!force_msr) && (!force_perf_event)) {
 		result=rapl_sysfs(core);
-	}
-
-	if (result<0) {
-		if ((force_perf_event) && (!force_msr)) {
-			result=rapl_perf(core);
+		if (result==0) {
+			printf("\nUsing sysfs powercap interface to gather results\n\n");
+			use_sysfs=1;
+			goto ready;
 		}
 	}
 
-	if (result<0) {
-		result=rapl_msr(core,cpu_model,delay);
+	if ((force_perf_event) && (!force_msr)) {
+		result=rapl_perf_detect(core);
+		rapl_perf(core);
+		if (result==0) {
+			printf("\nUsing perf_event interface to gather results\n\n");
+			use_perf_event=1;
+			goto ready;
+		}
 	}
 
-	if (result<0) {
+	result=rapl_detect_msr(core,cpu_model);
+	rapl_msr(core,cpu_model);
 
+	if (result==0) {
+		printf("\nUsing /dev/msr interface to gather results\n\n");
+		use_msr=1;
+	}
+
+	else {
 		printf("Unable to read RAPL counters.\n");
 		printf("* Verify you have an Intel Sandybridge or newer processor\n");
 		printf("* You may need to run as root or have /proc/sys/kernel/perf_event_paranoid set properly\n");
@@ -839,7 +810,75 @@ int main(int argc, char **argv) {
 		printf("\n");
 
 		return -1;
+	}
 
+ready:
+
+	gettimeofday(&current_time, NULL);
+	lt=current_time.tv_sec+(current_time.tv_usec/1000000.0);
+	ot=lt;
+	for(j=0;j<total_packages;j++) {
+		last_package[j]=package_energy[j];
+		last_cores[j]=cores_energy[j];
+		last_uncore[j]=uncore_energy[j];
+		last_dram[j]=dram_energy[j];
+		last_psys[j]=psys_energy[j];
+	}
+
+	/* PLOT LOOP */
+	printf("Time (s)\t");
+	for(j=0;j<total_packages;j++) {
+		if (available&PACKAGE) printf("Package%d(W)\t",j);
+		if (available&CORES) printf("Cores(W)\t");
+		if (available&UNCORE) printf("GPU(W)\t\t");
+		if (available&DRAM) printf("DRAM(W)\t\t");
+		if (available&PSYS) printf("Psys(W)|\t");
+	}
+	printf("\n");
+	while(1) {
+
+		gettimeofday(&current_time, NULL);
+		ct=current_time.tv_sec+(current_time.tv_usec/1000000.0);
+
+		if (use_sysfs) {
+			result=rapl_sysfs(core);
+		}
+		else if (use_perf_event) {
+			result=rapl_perf(core);
+		}
+		else if (use_msr) {
+			result=rapl_msr(core,cpu_model);
+		}
+
+		if (first_time) {
+			first_time=0;
+		}
+		else {
+		printf("%lf\t",ct-ot);
+		for(j=0;j<total_packages;j++) {
+			if (available&PACKAGE) printf("%lf\t",
+					(package_energy[j]-last_package[j])/(ct-lt));
+			if (available&CORES) printf("%lf\t",
+					(cores_energy[j]-last_cores[j])/(ct-lt));
+			if (available&UNCORE) printf("%lf\t",
+					(uncore_energy[j]-last_uncore[j])/(ct-lt));
+			if (available&DRAM) printf("%lf\t",
+					(dram_energy[j]-last_dram[j])/(ct-lt));
+			if (available&PSYS) printf("%lf\t",
+					(psys_energy[j]-last_psys[j])/(ct-lt));
+		}
+		printf("\n");
+		}
+		usleep(500000);
+		lt=ct;
+		for(j=0;j<total_packages;j++) {
+			last_package[j]=package_energy[j];
+			last_cores[j]=cores_energy[j];
+			last_uncore[j]=uncore_energy[j];
+			last_dram[j]=dram_energy[j];
+			last_psys[j]=psys_energy[j];
+		}
+		fflush(stdout);
 	}
 
 	return 0;

@@ -448,8 +448,12 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 
 		result=read_msr(fd,MSR_PKG_ENERGY_STATUS);
 		package_after[j]=(double)result*cpu_energy_units[j];
-		printf("\t\tPackage avg power: %.6fW\n",
-			(package_after[j]-package_before[j])/(double)delay);
+
+		double pkg_avg_power, cores_avg_power, dram_avg_power;
+		pkg_avg_power = (package_after[j]-package_before[j])/(double)delay;
+		if ( pkg_avg_power < 0.0 ) 
+			pkg_avg_power = -1.0;
+		printf("\t\tPackage avg power: %.6fW\n", pkg_avg_power);
 
 		result=read_msr(fd,MSR_PP0_ENERGY_STATUS);
 		pp0_after[j]=(double)result*cpu_energy_units[j];
@@ -465,8 +469,11 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 
 			result=read_msr(fd,MSR_PP1_ENERGY_STATUS);
 			pp1_after[j]=(double)result*cpu_energy_units[j];
-			printf("\t\tPowerPlane1 (on-core GPU if avail) avg power: %.6fW\n",
-				(pp1_after[j]-pp1_before[j])/(double)delay);
+			cores_avg_power = (pp1_after[j]-pp1_before[j])/(double)delay;
+			if ( cores_avg_power < 0.0 ) 
+				cores_avg_power = -1.0;
+			printf("\t\tPowerPlane1 (on-core GPU if avail) avg power: %.6fW\n", 
+				cores_avg_power);
 		}
 
 		if ((cpu_model==CPU_SANDYBRIDGE_EP) || (cpu_model==CPU_IVYBRIDGE_EP) ||
@@ -478,8 +485,10 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 
 			result=read_msr(fd,MSR_DRAM_ENERGY_STATUS);
 			dram_after[j]=(double)result*dram_energy_units[j];
-			printf("\t\tDRAM avg power: %.6fW\n",
-				(dram_after[j]-dram_before[j])/(double)delay);
+			dram_avg_power = (dram_after[j]-dram_before[j])/(double)delay;
+			if ( dram_avg_power < 0.0 ) 
+				dram_avg_power = -1.0;
+			printf("\t\tDRAM avg power: %.6fW\n", dram_avg_power);
 		}
 
 		if ((cpu_model==CPU_SKYLAKE) || (cpu_model==CPU_SKYLAKE_HS) ||

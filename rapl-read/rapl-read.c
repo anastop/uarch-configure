@@ -124,17 +124,28 @@ static long long read_msr(int fd, int which) {
 #define CPU_SANDYBRIDGE_EP	45
 #define CPU_IVYBRIDGE		58
 #define CPU_IVYBRIDGE_EP	62
-#define CPU_HASWELL		60	// 69,70 too?
+#define CPU_HASWELL		60
+#define CPU_HASWELL_ULT		69
+#define CPU_HASWELL_GT3E	70
 #define CPU_HASWELL_EP		63
-#define CPU_BROADWELL		61	// 71 too?
+#define CPU_BROADWELL		61
+#define CPU_BROADWELL_GT3E	71
 #define CPU_BROADWELL_EP	79
 #define CPU_BROADWELL_DE	86
 #define CPU_SKYLAKE		78
 #define CPU_SKYLAKE_HS		94
+#define CPU_SKYLAKE_X		85
 #define CPU_KNIGHTS_LANDING	87
-#define CPU_KABYLAKE		142
-#define CPU_KABYLAKE_2		158
-
+#define CPU_KNIGHTS_MILL	133
+#define CPU_KABYLAKE_MOBILE	142
+#define CPU_KABYLAKE		158
+#define CPU_ATOM_SILVERMONT	55
+#define CPU_ATOM_AIRMONT	76
+#define CPU_ATOM_MERRIFIELD	74
+#define CPU_ATOM_MOOREFIELD	90
+#define CPU_ATOM_GOLDMONT	92
+#define CPU_ATOM_GEMINI_LAKE	122
+#define CPU_ATOM_DENVERTON	95
 
 /* TODO: on Skylake, also may support  PSys "platform" domain,	*/
 /* the whole SoC not just the package.				*/
@@ -196,12 +207,15 @@ static int detect_cpu(void) {
 			printf("Ivybridge-EP");
 			break;
 		case CPU_HASWELL:
+		case CPU_HASWELL_ULT:
+		case CPU_HASWELL_GT3E:
 			printf("Haswell");
 			break;
 		case CPU_HASWELL_EP:
 			printf("Haswell-EP");
 			break;
 		case CPU_BROADWELL:
+		case CPU_BROADWELL_GT3E:
 			printf("Broadwell");
 			break;
 		case CPU_BROADWELL_EP:
@@ -211,12 +225,23 @@ static int detect_cpu(void) {
 		case CPU_SKYLAKE_HS:
 			printf("Skylake");
 			break;
+		case CPU_SKYLAKE_X:
+			printf("Skylake-X");
+			break;
 		case CPU_KABYLAKE:
-		case CPU_KABYLAKE_2:
+		case CPU_KABYLAKE_MOBILE:
 			printf("Kaby Lake");
 			break;
 		case CPU_KNIGHTS_LANDING:
 			printf("Knight's Landing");
+			break;
+		case CPU_KNIGHTS_MILL:
+			printf("Knight's Mill");
+			break;
+		case CPU_ATOM_GOLDMONT:
+		case CPU_ATOM_GEMINI_LAKE:
+		case CPU_ATOM_DENVERTON:
+			printf("Atom");
 			break;
 		default:
 			printf("Unsupported model %d\n",model);
@@ -289,11 +314,81 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 	double thermal_spec_power,minimum_power,maximum_power,time_window;
 	int j;
 
+	int dram_avail=0,pp0_avail=0,pp1_avail=0,psys_avail=0;
+	int different_units=0;
+
 	printf("\nTrying /dev/msr interface to gather results\n\n");
 
 	if (cpu_model<0) {
 		printf("\tUnsupported CPU model %d\n",cpu_model);
 		return -1;
+	}
+
+	switch(cpu_model) {
+
+		case CPU_SANDYBRIDGE_EP:
+		case CPU_IVYBRIDGE_EP:
+			pp0_avail=1;
+			pp1_avail=0;
+			dram_avail=1;
+			different_units=0;
+			psys_avail=0;
+			break;
+
+		case CPU_HASWELL_EP:
+		case CPU_BROADWELL_EP:
+		case CPU_SKYLAKE_X:
+			pp0_avail=1;
+			pp1_avail=0;
+			dram_avail=1;
+			different_units=1;
+			psys_avail=0;
+			break;
+
+		case CPU_KNIGHTS_LANDING:
+		case CPU_KNIGHTS_MILL:
+			pp0_avail=0;
+			pp1_avail=0;
+			dram_avail=1;
+			different_units=1;
+			psys_avail=0;
+			break;
+
+		case CPU_SANDYBRIDGE:
+		case CPU_IVYBRIDGE:
+			pp0_avail=1;
+			pp1_avail=1;
+			dram_avail=0;
+			different_units=0;
+			psys_avail=0;
+			break;
+
+		case CPU_HASWELL:
+		case CPU_HASWELL_ULT:
+		case CPU_HASWELL_GT3E:
+		case CPU_BROADWELL:
+		case CPU_BROADWELL_GT3E:
+		case CPU_ATOM_GOLDMONT:
+		case CPU_ATOM_GEMINI_LAKE:
+		case CPU_ATOM_DENVERTON:
+			pp0_avail=1;
+			pp1_avail=1;
+			dram_avail=1;
+			different_units=0;
+			psys_avail=0;
+			break;
+
+		case CPU_SKYLAKE:
+		case CPU_SKYLAKE_HS:
+		case CPU_KABYLAKE:
+		case CPU_KABYLAKE_MOBILE:
+			pp0_avail=1;
+			pp1_avail=1;
+			dram_avail=1;
+			different_units=0;
+			psys_avail=1;
+			break;
+
 	}
 
 	for(j=0;j<total_packages;j++) {
@@ -310,8 +405,7 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 
 		/* On Haswell EP and Knights Landing */
 		/* The DRAM units differ from the CPU ones */
-		if ((cpu_model==CPU_HASWELL_EP) || (cpu_model==CPU_BROADWELL_EP) ||
-					(cpu_model==CPU_KNIGHTS_LANDING)) {
+		if (different_units) {
 			dram_energy_units[j]=pow(0.5,(double)16);
 			printf("DRAM: Using %lf instead of %lf\n",
 				dram_energy_units[j],cpu_energy_units[j]);
@@ -375,9 +469,7 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 		}
 
 
-		if ((cpu_model==CPU_SANDYBRIDGE) || (cpu_model==CPU_IVYBRIDGE) ||
-			(cpu_model==CPU_HASWELL) || (cpu_model==CPU_BROADWELL)) {
-
+		if (pp1_avail) {
 			result=read_msr(fd,MSR_PP1_POLICY);
 			int pp1_policy=(int)result&0x001f;
 			printf("\tPowerPlane1 (on-core GPU if avail) %d policy: %d\n",
@@ -397,17 +489,16 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 		package_before[j]=(double)result*cpu_energy_units[j];
 
 		/* PP0 energy */
-		/* Not available on Haswell-EP? */
-		result=read_msr(fd,MSR_PP0_ENERGY_STATUS);
-		pp0_before[j]=(double)result*cpu_energy_units[j];
+		/* Not available on Knights* */
+		/* Always returns zero on Haswell-EP? */
+		if (pp0_avail) {
+			result=read_msr(fd,MSR_PP0_ENERGY_STATUS);
+			pp0_before[j]=(double)result*cpu_energy_units[j];
+		}
 
 		/* PP1 energy */
 		/* not available on *Bridge-EP */
-		if ((cpu_model==CPU_SANDYBRIDGE) || (cpu_model==CPU_IVYBRIDGE) ||
-			(cpu_model==CPU_HASWELL) || (cpu_model==CPU_BROADWELL) ||
-			(cpu_model==CPU_SKYLAKE) || (cpu_model==CPU_SKYLAKE_HS) ||
-			(cpu_model==CPU_KABYLAKE) || (cpu_model==CPU_KABYLAKE_2)) {
-
+		if (pp1_avail) {
 	 		result=read_msr(fd,MSR_PP1_ENERGY_STATUS);
 			pp1_before[j]=(double)result*cpu_energy_units[j];
 		}
@@ -415,20 +506,17 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 
 		/* Updated documentation (but not the Vol3B) says Haswell and	*/
 		/* Broadwell have DRAM support too				*/
-		if ((cpu_model==CPU_SANDYBRIDGE_EP) || (cpu_model==CPU_IVYBRIDGE_EP) ||
-			(cpu_model==CPU_HASWELL_EP) || (cpu_model==CPU_BROADWELL_EP) ||
-			(cpu_model==CPU_HASWELL) || (cpu_model==CPU_BROADWELL) ||
-			(cpu_model==CPU_SKYLAKE) || (cpu_model==CPU_SKYLAKE_HS) ||
-			(cpu_model==CPU_KABYLAKE) || (cpu_model==CPU_KABYLAKE_2)) {
-
+		if (dram_avail) {
 			result=read_msr(fd,MSR_DRAM_ENERGY_STATUS);
 			dram_before[j]=(double)result*dram_energy_units[j];
 		}
 
 
 		/* Skylake and newer for Psys				*/
-		if ((cpu_model==CPU_SKYLAKE) || (cpu_model==CPU_SKYLAKE_HS) ||
-			(cpu_model==CPU_KABYLAKE) || (cpu_model==CPU_KABYLAKE_2)) {
+		if ((cpu_model==CPU_SKYLAKE) ||
+			(cpu_model==CPU_SKYLAKE_HS) ||
+			(cpu_model==CPU_KABYLAKE) ||
+			(cpu_model==CPU_KABYLAKE_MOBILE)) {
 
 			result=read_msr(fd,MSR_PLATFORM_ENERGY_STATUS);
 			psys_before[j]=(double)result*cpu_energy_units[j];
@@ -461,12 +549,7 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 			(pp0_after[j]-pp0_before[j])/(double)delay);
 
 		/* not available on SandyBridge-EP */
-		if ((cpu_model==CPU_SANDYBRIDGE) || (cpu_model==CPU_IVYBRIDGE) ||
-			(cpu_model==CPU_HASWELL) || (cpu_model==CPU_BROADWELL) ||
-			(cpu_model==CPU_SKYLAKE) || (cpu_model==CPU_SKYLAKE_HS) ||
-			(cpu_model==CPU_KABYLAKE) || (cpu_model==CPU_KABYLAKE_2)) {
-
-
+		if (pp1_avail) {
 			result=read_msr(fd,MSR_PP1_ENERGY_STATUS);
 			pp1_after[j]=(double)result*cpu_energy_units[j];
 			cores_avg_power = (pp1_after[j]-pp1_before[j])/(double)delay;
@@ -476,13 +559,7 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 				cores_avg_power);
 		}
 
-		if ((cpu_model==CPU_SANDYBRIDGE_EP) || (cpu_model==CPU_IVYBRIDGE_EP) ||
-			(cpu_model==CPU_HASWELL_EP) || (cpu_model==CPU_BROADWELL_EP) ||
-			(cpu_model==CPU_HASWELL) || (cpu_model==CPU_BROADWELL) ||
-			(cpu_model==CPU_SKYLAKE) || (cpu_model==CPU_SKYLAKE_HS) ||
-			(cpu_model==CPU_KABYLAKE) || (cpu_model==CPU_KABYLAKE_2)) {
-
-
+		if (dram_avail) {
 			result=read_msr(fd,MSR_DRAM_ENERGY_STATUS);
 			dram_after[j]=(double)result*dram_energy_units[j];
 			dram_avg_power = (dram_after[j]-dram_before[j])/(double)delay;
@@ -491,10 +568,7 @@ static int rapl_msr(int core, int cpu_model, int delay) {
 			printf("\t\tDRAM avg power: %.6fW\n", dram_avg_power);
 		}
 
-		if ((cpu_model==CPU_SKYLAKE) || (cpu_model==CPU_SKYLAKE_HS) ||
-			(cpu_model==CPU_KABYLAKE) || (cpu_model==CPU_KABYLAKE_2)) {
-
-
+		if (psys_avail) {
 			result=read_msr(fd,MSR_PLATFORM_ENERGY_STATUS);
 			psys_after[j]=(double)result*cpu_energy_units[j];
 			printf("\t\tPSYS: %.6fJ\n",
